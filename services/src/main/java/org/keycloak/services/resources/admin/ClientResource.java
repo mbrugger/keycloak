@@ -26,28 +26,15 @@ import org.keycloak.common.Profile;
 import org.keycloak.common.util.Time;
 import org.keycloak.events.admin.OperationType;
 import org.keycloak.events.admin.ResourceType;
-import org.keycloak.models.AuthenticatedClientSessionModel;
-import org.keycloak.models.ClientModel;
-import org.keycloak.models.ClientScopeModel;
-import org.keycloak.models.Constants;
-import org.keycloak.models.KeycloakSession;
-import org.keycloak.models.ModelDuplicateException;
-import org.keycloak.models.RealmModel;
-import org.keycloak.models.UserCredentialModel;
-import org.keycloak.models.UserManager;
-import org.keycloak.models.UserModel;
-import org.keycloak.models.UserSessionModel;
+import org.keycloak.models.*;
 import org.keycloak.models.utils.KeycloakModelUtils;
 import org.keycloak.models.utils.ModelToRepresentation;
 import org.keycloak.models.utils.RepresentationToModel;
 import org.keycloak.protocol.ClientInstallationProvider;
+import org.keycloak.protocol.ProtocolMapper;
+import org.keycloak.protocol.ProtocolMapperConfigException;
 import org.keycloak.representations.adapters.action.GlobalRequestResult;
-import org.keycloak.representations.idm.ClientRepresentation;
-import org.keycloak.representations.idm.ClientScopeRepresentation;
-import org.keycloak.representations.idm.CredentialRepresentation;
-import org.keycloak.representations.idm.ManagementPermissionReference;
-import org.keycloak.representations.idm.UserRepresentation;
-import org.keycloak.representations.idm.UserSessionRepresentation;
+import org.keycloak.representations.idm.*;
 import org.keycloak.services.ErrorResponse;
 import org.keycloak.services.ErrorResponseException;
 import org.keycloak.services.clientregistration.ClientRegistrationTokenUtils;
@@ -155,11 +142,13 @@ public class ClientResource {
 
         try {
             updateClientFromRep(rep, client, session);
+            updateProtocolMappersFromRep(rep, client, session);
             adminEvent.operation(OperationType.UPDATE).resourcePath(uriInfo).representation(rep).success();
             updateAuthorizationSettings(rep);
             return Response.noContent().build();
-        } catch (ModelDuplicateException e) {
-            return ErrorResponse.exists("Client " + rep.getClientId() + " already exists");
+        } catch (ProtocolMapperConfigException|ModelDuplicateException e) {
+            logger.error(e.getMessage());
+            return ErrorResponse.error(e.getMessage(), Response.Status.BAD_REQUEST);
         }
     }
 
@@ -696,6 +685,25 @@ public class ClientResource {
 
         RepresentationToModel.updateClient(rep, client);
     }
+
+
+    private void updateProtocolMappersFromRep(ClientRepresentation rep, ClientModel client, KeycloakSession session) throws ProtocolMapperConfigException {
+
+        if (rep.getProtocolMappers() != null) {
+            for (ProtocolMapperRepresentation protocolMapperRepresentation: rep.getProtocolMappers()) {
+                ProtocolMapperModel model = RepresentationToModel.toModel(protocolMapperRepresentation);
+                ProtocolMapper mapper = (ProtocolMapper) session.getKeycloakSessionFactory().getProviderFactory(ProtocolMapper.class, model.getProtocolMapper());
+                if (mapper != null) {
+                    mapper.validateConfig(session, realm, client, model);
+                } else {
+                    logger.errorv("Unkown ProtocolMapper provider: '{}'", model.getProtocolMapper());
+                    throw new BadRequestException("ProtocolMapper provider not found");
+                }
+            }
+            RepresentationToModel.updateClientProtocolMappers(rep, client);
+        }
+    }
+
 
     private void updateAuthorizationSettings(ClientRepresentation rep) {
         if (Profile.isFeatureEnabled(Profile.Feature.AUTHORIZATION)) {
